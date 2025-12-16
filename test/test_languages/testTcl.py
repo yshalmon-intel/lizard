@@ -1,11 +1,18 @@
 import unittest
-from lizard import analyze_file, FileAnalyzer
+from lizard import analyze_file, FileAnalyzer, get_extensions
 from lizard_languages import TclReader
+from lizard_ext.lizardoutside import LizardExtension as CountOutsideComplexity
 
 
 def get_tcl_function_list(source_code):
     """Helper function to analyze TCL source code and return function list."""
     return analyze_file.analyze_source_code(
+        "test.tcl", source_code).function_list
+
+
+def get_tcl_function_list_with_extension(source_code, extension):
+    """Helper function to analyze TCL source code with an extension."""
+    return FileAnalyzer(get_extensions([extension])).analyze_source_code(
         "test.tcl", source_code).function_list
 
 
@@ -349,6 +356,188 @@ class TestTclLanguageRecognition(unittest.TestCase):
         result = analyze_file.analyze_source_code("test.tcl", code)
         self.assertEqual(2, len(result.function_list))
         self.assertGreater(result.nloc, 0)
+
+
+class TestTclFlatCodeAnalysis(unittest.TestCase):
+    """Test TCL flat code (code outside procs) complexity tracking."""
+
+    def test_no_flat_code_complexity_without_extension(self):
+        """Test that flat code is not counted without lizardoutside extension."""
+        result = get_tcl_function_list('''
+            set x 10
+            if {$x > 5} {
+                puts "Greater than 5"
+            }
+        ''')
+        self.assertEqual(0, len(result))
+
+    def test_flat_code_simple_if(self):
+        """Test flat code with simple if statement."""
+        result = get_tcl_function_list_with_extension('''
+            set x 10
+            if {$x > 5} {
+                puts "Greater than 5"
+            }
+        ''', CountOutsideComplexity())
+        self.assertEqual(1, len(result))
+        self.assertEqual("*global*", result[0].name)
+        # CC = 1 (base) + 1 (if) = 2
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_flat_code_if_elseif(self):
+        """Test flat code with if-elseif-else chain."""
+        result = get_tcl_function_list_with_extension('''
+            set x 10
+            if {$x < 5} {
+                puts "Less than 5"
+            } elseif {$x < 10} {
+                puts "Less than 10"
+            } elseif {$x < 15} {
+                puts "Less than 15"
+            } else {
+                puts "15 or more"
+            }
+        ''', CountOutsideComplexity())
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (if) + 2 (elseif) = 4
+        self.assertEqual(4, result[0].cyclomatic_complexity)
+
+    def test_flat_code_loops(self):
+        """Test flat code with different loop types."""
+        result = get_tcl_function_list_with_extension('''
+            # For loop
+            for {set i 0} {$i < 10} {incr i} {
+                puts $i
+            }
+            
+            # While loop
+            set j 0
+            while {$j < 5} {
+                puts $j
+                incr j
+            }
+            
+            # Foreach loop
+            foreach item {a b c} {
+                puts $item
+            }
+        ''', CountOutsideComplexity())
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (for) + 1 (while) + 1 (foreach) = 4
+        self.assertEqual(4, result[0].cyclomatic_complexity)
+
+    def test_flat_code_logical_operators(self):
+        """Test flat code with logical operators."""
+        result = get_tcl_function_list_with_extension('''
+            set x 10
+            set y 20
+            if {$x > 5 && $y < 30} {
+                puts "Condition 1"
+            }
+            if {$x < 0 || $y > 100} {
+                puts "Condition 2"
+            }
+        ''', CountOutsideComplexity())
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (if) + 1 (&&) + 1 (if) + 1 (||) = 5
+        self.assertEqual(5, result[0].cyclomatic_complexity)
+
+    def test_flat_code_nested_structures(self):
+        """Test flat code with nested control structures."""
+        result = get_tcl_function_list_with_extension('''
+            set x 10
+            if {$x > 0} {
+                set y 5
+                while {$y > 0} {
+                    if {$x == $y} {
+                        puts "Equal"
+                    }
+                    incr y -1
+                }
+            }
+        ''', CountOutsideComplexity())
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (if) + 1 (while) + 1 (if) = 4
+        self.assertEqual(4, result[0].cyclomatic_complexity)
+
+    def test_flat_code_with_procs(self):
+        """Test that flat code and procs are tracked separately."""
+        result = get_tcl_function_list_with_extension('''
+            # Flat code before proc
+            if {1} {
+                puts "Before"
+            }
+            
+            proc my_proc {x} {
+                if {$x > 0} {
+                    return 1
+                }
+            }
+            
+            # Flat code after proc
+            for {set i 0} {$i < 10} {incr i} {
+                puts $i
+            }
+        ''', CountOutsideComplexity())
+        self.assertEqual(2, len(result))
+        
+        # Find the proc
+        proc = next(f for f in result if f.name == 'my_proc')
+        self.assertEqual(2, proc.cyclomatic_complexity)  # 1 + 1 (if)
+        
+        # Find the global code
+        global_func = next(f for f in result if f.name == '*global*')
+        # CC = 1 (base) + 1 (if) + 1 (for) = 3
+        self.assertEqual(3, global_func.cyclomatic_complexity)
+
+    def test_flat_code_catch_error_handling(self):
+        """Test flat code with catch for error handling."""
+        result = get_tcl_function_list_with_extension('''
+            set result 0
+            if {[catch {expr {10 / 0}} error_msg]} {
+                puts "Error: $error_msg"
+            }
+        ''', CountOutsideComplexity())
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (if) = 2
+        # catch is part of the condition, not a separate decision point
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_empty_flat_code(self):
+        """Test that empty code still creates global function with CC=1."""
+        result = get_tcl_function_list_with_extension('', CountOutsideComplexity())
+        self.assertEqual(1, len(result))
+        self.assertEqual("*global*", result[0].name)
+        self.assertEqual(1, result[0].cyclomatic_complexity)
+
+    def test_flat_code_only_comments(self):
+        """Test flat code with only comments."""
+        result = get_tcl_function_list_with_extension('''
+            # This is a comment
+            # Another comment
+        ''', CountOutsideComplexity())
+        self.assertEqual(1, len(result))
+        self.assertEqual(1, result[0].cyclomatic_complexity)
+
+    def test_complex_flat_code_realistic(self):
+        """Test realistic complex flat code example."""
+        result = get_tcl_function_list_with_extension('''
+            set data {10 20 30 40}
+            set threshold 15
+            
+            foreach item $data {
+                if {$item > $threshold} {
+                    if {$item % 2 == 0} {
+                        puts "Even and above threshold: $item"
+                    } elseif {$item % 3 == 0} {
+                        puts "Divisible by 3: $item"
+                    }
+                }
+            }
+        ''', CountOutsideComplexity())
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (foreach) + 1 (if) + 1 (if) + 1 (elseif) = 5
+        self.assertEqual(5, result[0].cyclomatic_complexity)
 
 
 if __name__ == '__main__':

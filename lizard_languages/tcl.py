@@ -21,7 +21,7 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
     language_names = ['tcl']
     
     # Separated condition categories for cyclomatic complexity
-    _control_flow_keywords = {'if', 'elseif', 'while', 'for', 'foreach', 'catch'}
+    _control_flow_keywords = {'if', 'elseif', 'while', 'for', 'foreach', 'catch', 'switch'}
     _logical_operators = {'&&', '||', 'and', 'or'}
     _case_keywords = set()  # TCL uses switch with pattern matching
     _ternary_operators = set()  # TCL uses if syntax, not ternary
