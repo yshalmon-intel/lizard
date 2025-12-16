@@ -41,16 +41,106 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
         - Command substitution: [...]
         - Variable substitution: $var
         - Braces: { and } are individual tokens
+        
+        Critical: TCL braces protect their content from interpretation. Content inside
+        braces like {\"} should NOT trigger the quoted-string regex pattern.
+        We solve this by masking all braced content before tokenization.
         """
-        # TCL comment pattern: # followed by anything to end of line
-        return ScriptLanguageMixIn.generate_common_tokens(
-            source_code,
+        import re
+        
+        # Strategy: Recursively find and mask ALL braced content (handling nesting)
+        # before standard tokenization, then restore after
+        
+        def mask_braces(text):
+            """Recursively mask braced content with placeholders."""
+            masked = text
+            replacements = {}
+            counter = 0
+            
+            # Keep processing until no more braced content found
+            while True:
+                found = False
+                i = 0
+                while i < len(masked):
+                    if masked[i] == '{':
+                        # Found opening brace - find matching close
+                        depth = 1
+                        j = i + 1
+                        while j < len(masked) and depth > 0:
+                            if masked[j] == '{':
+                                depth += 1
+                            elif masked[j] == '}':
+                                depth -= 1
+                            j += 1
+                        
+                        if depth == 0:
+                            # Found matching close brace
+                            content = masked[i:j]  # Include braces
+                            placeholder = f'__TCL_BRACE_{counter}__'
+                            replacements[placeholder] = content
+                            masked = masked[:i] + placeholder + masked[j:]
+                            counter += 1
+                            found = True
+                            break  # Start over to handle nested cases
+                    i += 1
+                
+                if not found:
+                    break
+            
+            return masked, replacements
+        
+        def unmask_braces(token, replacements):
+            """Recursively unmask braced content in a token."""
+            if token in replacements:
+                content = replacements[token]
+                # Recursively unmask any nested placeholders in content
+                for placeholder, original in replacements.items():
+                    if placeholder in content:
+                        content = content.replace(placeholder, original)
+                return content
+            return token
+        
+        # Mask all braced content
+        masked_source, replacements = mask_braces(source_code)
+        
+        # Tokenize the masked source (no braces to confuse quoted string patterns)
+        base_tokens = ScriptLanguageMixIn.generate_common_tokens(
+            masked_source,
             # Match command substitution
             r"|\[[^\]]*\]" +
             # Match variable substitution
             r"|\$\w+" +
             addition,
             token_class)
+        
+        # Unmask tokens and expand braced content
+        for token in base_tokens:
+            # First, restore any placeholders embedded in this token
+            restored_token = token
+            for placeholder, original in replacements.items():
+                if placeholder in restored_token:
+                    restored_token = restored_token.replace(placeholder, original)
+            
+            if token in replacements:
+                # This token IS a braced content placeholder - expand it
+                original = restored_token
+                
+                # Yield opening brace
+                yield '{'
+                
+                # Recursively tokenize the inner content
+                inner = original[1:-1]  # Remove outer braces
+                if inner:
+                    # Generate tokens for inner content
+                    inner_tokens = TclReader.generate_tokens(inner, addition, token_class)
+                    for inner_token in inner_tokens:
+                        yield inner_token
+                
+                # Yield closing brace
+                yield '}'
+            else:
+                # Regular token, just yield it (with placeholders restored)
+                yield restored_token
 
 
 class TclStateMachine(CodeStateMachine):
@@ -173,8 +263,11 @@ class TclStateMachine(CodeStateMachine):
 
     def _switch_options(self, token):
         """After 'switch' keyword - may have options like -exact, -glob, -regexp, or the value directly."""
-        if token in ['-exact', '-glob', '-regexp', '-nocase', '--']:
-            # Skip switch options
+        if token in ['-', '--']:
+            # Dash for options or end-of-options marker - stay in this state
+            pass
+        elif token in ['exact', 'glob', 'regexp', 'nocase', 'indexed']:
+            # These are option names that follow '-', just skip them
             pass
         elif token == '{':
             # Start of switch body - push onto stack
@@ -217,6 +310,11 @@ class TclStateMachine(CodeStateMachine):
             self.context.add_condition()
             self.next(self._switch_options)
         elif token == '{':
+            # Check if this brace starts a pattern action block (at level 1)
+            if current_switch['brace_level'] == 1:
+                # At level 1, opening brace starts a pattern action block
+                # Each pattern-action pair has the form: pattern { action }
+                current_switch['pattern_count'] += 1
             current_switch['brace_level'] += 1
         elif token == '}':
             current_switch['brace_level'] -= 1
@@ -235,8 +333,3 @@ class TclStateMachine(CodeStateMachine):
                     self.next(self._switch_body)
                 else:
                     self.next(return_state)
-        elif current_switch['brace_level'] == 1 and token not in [' ', '\n', '\t', '#']:
-            # At level 1 (inside switch body but outside pattern bodies), 
-            # non-whitespace tokens are pattern names
-            if not token.startswith('#'):  # Ignore comments
-                current_switch['pattern_count'] += 1

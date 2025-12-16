@@ -473,6 +473,412 @@ class TestTclNamespace(unittest.TestCase):
         self.assertEqual(1, result[0].parameter_count)  # 'name' only, default value block is skipped
 
 
+class TestTclRegsubBraceIssue(unittest.TestCase):
+    """Test that regsub patterns with backslash-quote in braces don't break parsing."""
+
+    def test_regsub_with_backslash_quote(self):
+        """Test regsub with {\"} pattern."""
+        result = get_tcl_function_list('''
+            proc clean_string {str} {
+                regsub {\"} $str "" result
+                return $result
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("clean_string", result[0].name)
+        self.assertEqual(1, result[0].parameter_count)
+        self.assertEqual(1, result[0].cyclomatic_complexity)
+
+    def test_regsub_with_complex_pattern(self):
+        """Test regsub with complex pattern {\"|\-}."""
+        result = get_tcl_function_list('''
+            proc clean_layers {text} {
+                regsub {\"|\-} $text " " cleaned
+                return $cleaned
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("clean_layers", result[0].name)
+        self.assertEqual(1, result[0].parameter_count)
+        self.assertEqual(1, result[0].cyclomatic_complexity)
+
+    def test_namespace_proc_with_regsub_backslash_quote(self):
+        """Test namespace-qualified proc with regsub containing {\"|\-}."""
+        result = get_tcl_function_list('''
+            proc ::htree::create_routing_rules_get_layers { root layer_prefix } {
+                global ivar
+                set layers ""
+                if {[info exists ivar(cts_htree,routing,layers,$root)] && $ivar(cts_htree,routing,layers,$root)!=""} {
+                    regsub -all $layer_prefix $ivar(cts_htree,routing,layers,$root) "" tmp
+                    regsub {\"|\-} $tmp " " layers
+                } else {
+                    regsub -all $layer_prefix $ivar(cts_htree,routing,layers,default) "" tmp
+                    regsub {\"|\-} $tmp " " layers
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("::htree::create_routing_rules_get_layers", result[0].name)
+        self.assertEqual(2, result[0].parameter_count)
+        # CC = 1 (base) + 1 (if) + 1 (&&) = 3
+        self.assertEqual(3, result[0].cyclomatic_complexity)
+
+    def test_multiple_braced_patterns_in_proc(self):
+        """Test procedure with multiple braced patterns containing special chars."""
+        result = get_tcl_function_list('''
+            proc process {text} {
+                regsub {\\|} $text "_" step1
+                regsub {\"} $step1 "'" step2
+                regsub {\\-} $step2 "" result
+                if {$result != ""} {
+                    return $result
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("process", result[0].name)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+
+class TestTclCornerCases(unittest.TestCase):
+    """Test corner cases and edge conditions in TCL parsing."""
+
+    def test_deeply_nested_braces(self):
+        """Test deeply nested braced content."""
+        result = get_tcl_function_list('''
+            proc nested_test {x} {
+                if {$x > 0} {
+                    set pattern {{{nested}}}
+                    regsub $pattern $x "" result
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("nested_test", result[0].name)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_braces_with_mixed_quotes(self):
+        """Test braces containing both single and double quotes."""
+        result = get_tcl_function_list('''
+            proc mixed_quotes {str} {
+                regsub {"'} $str "" step1
+                regsub {'"-} $step1 "" result
+                return $result
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("mixed_quotes", result[0].name)
+        self.assertEqual(1, result[0].cyclomatic_complexity)
+
+    def test_empty_braces_in_various_contexts(self):
+        """Test empty braces {} in different contexts."""
+        result = get_tcl_function_list('''
+            proc empty_test {} {
+                set dict [dict create]
+                if {[llength $dict] == 0} {
+                    return {}
+                }
+                return $dict
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("empty_test", result[0].name)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_multiple_namespaces_in_file(self):
+        """Test multiple namespace-qualified procs in one file."""
+        result = get_tcl_function_list('''
+            proc ::ns1::func1 {x} {
+                if {$x > 0} { return 1 }
+            }
+            
+            proc ::ns2::func2 {y} {
+                while {$y > 0} { incr y -1 }
+            }
+            
+            proc ::ns1::ns2::func3 {} {
+                foreach item {1 2 3} { puts $item }
+            }
+        ''')
+        self.assertEqual(3, len(result))
+        self.assertEqual("::ns1::func1", result[0].name)
+        self.assertEqual("::ns2::func2", result[1].name)
+        self.assertEqual("::ns1::ns2::func3", result[2].name)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+        self.assertEqual(2, result[1].cyclomatic_complexity)
+        self.assertEqual(2, result[2].cyclomatic_complexity)
+
+    def test_complex_switch_with_default(self):
+        """Test switch with default case and multiple patterns."""
+        result = get_tcl_function_list('''
+            proc handle_input {cmd} {
+                switch -exact $cmd {
+                    start { puts "Starting" }
+                    stop { puts "Stopping" }
+                    pause { puts "Pausing" }
+                    resume { puts "Resuming" }
+                    default { puts "Unknown: $cmd" }
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (switch) + 4 (5 patterns - 1) = 6
+        self.assertEqual(6, result[0].cyclomatic_complexity)
+
+    def test_switch_with_glob_patterns(self):
+        """Test switch with -glob option and wildcard patterns."""
+        result = get_tcl_function_list('''
+            proc match_pattern {str} {
+                switch -glob $str {
+                    a* { puts "Starts with a" }
+                    *b { puts "Ends with b" }
+                    *c* { puts "Contains c" }
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (switch) + 2 (3 patterns - 1) = 4
+        self.assertEqual(4, result[0].cyclomatic_complexity)
+
+    def test_multiline_if_condition(self):
+        """Test if with multiline condition using backslash continuation."""
+        result = get_tcl_function_list('''
+            proc check_complex {a b c} {
+                if {$a > 0 && $b > 0 && $c > 0} {
+                    return 1
+                }
+                return 0
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (if) + 2 (two &&) = 4
+        self.assertEqual(4, result[0].cyclomatic_complexity)
+
+    def test_nested_if_else(self):
+        """Test deeply nested if-else structures."""
+        result = get_tcl_function_list('''
+            proc nested_conditions {x y} {
+                if {$x > 0} {
+                    if {$y > 0} {
+                        if {$x > $y} {
+                            return "x larger"
+                        } else {
+                            return "y larger or equal"
+                        }
+                    } else {
+                        return "y not positive"
+                    }
+                } else {
+                    return "x not positive"
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 3 (three if statements) = 4
+        self.assertEqual(4, result[0].cyclomatic_complexity)
+
+    def test_proc_with_args_parameter(self):
+        """Test proc with special 'args' parameter for variable arguments."""
+        result = get_tcl_function_list('''
+            proc variable_args {first args} {
+                set count 0
+                foreach arg $args {
+                    incr count
+                }
+                return $count
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("variable_args", result[0].name)
+        self.assertEqual(2, result[0].parameter_count)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_catch_with_nested_commands(self):
+        """Test catch with nested command substitution."""
+        result = get_tcl_function_list('''
+            proc safe_eval {expr} {
+                if {[catch {expr $expr} result]} {
+                    if {[catch {puts stderr $result}]} {
+                        return "error"
+                    }
+                }
+                return $result
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 2 (two if statements) = 3
+        self.assertEqual(3, result[0].cyclomatic_complexity)
+
+    def test_for_with_complex_initialization(self):
+        """Test for loop with complex initialization and increment."""
+        result = get_tcl_function_list('''
+            proc loop_test {n} {
+                for {set i 0; set j $n} {$i < $j} {incr i; incr j -1} {
+                    if {$i == $j} {
+                        break
+                    }
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (for) + 1 (if) = 3
+        self.assertEqual(3, result[0].cyclomatic_complexity)
+
+    def test_while_with_or_operator(self):
+        """Test while loop with OR operator in condition."""
+        result = get_tcl_function_list('''
+            proc wait_condition {a b} {
+                while {$a > 0 || $b > 0} {
+                    if {$a > 0} {
+                        incr a -1
+                    } else {
+                        incr b -1
+                    }
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (while) + 1 (||) + 1 (if) = 4
+        self.assertEqual(4, result[0].cyclomatic_complexity)
+
+    def test_foreach_with_multiple_lists(self):
+        """Test foreach with multiple iteration variables."""
+        result = get_tcl_function_list('''
+            proc iterate_pairs {list1 list2} {
+                foreach {a b} $list1 {c d} $list2 {
+                    if {$a > $c} {
+                        puts "$a > $c"
+                    }
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (foreach) + 1 (if) = 3
+        self.assertEqual(3, result[0].cyclomatic_complexity)
+
+    def test_regsub_all_with_complex_pattern(self):
+        """Test regsub -all with complex regex pattern in braces."""
+        result = get_tcl_function_list('''
+            proc clean_all {text} {
+                regsub -all {[\"'`]} $text "" cleaned
+                regsub -all {\\s+} $cleaned " " final
+                return $final
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("clean_all", result[0].name)
+        self.assertEqual(1, result[0].cyclomatic_complexity)
+
+    def test_string_with_embedded_braces(self):
+        """Test quoted strings containing brace characters."""
+        result = get_tcl_function_list('''
+            proc format_output {data} {
+                set template "Result: {$data}"
+                if {[string length $template] > 0} {
+                    return $template
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_expr_with_ternary_like_structure(self):
+        """Test expr with conditional expression."""
+        result = get_tcl_function_list('''
+            proc calculate {x y op} {
+                if {$op eq "add"} {
+                    set result [expr {$x + $y}]
+                } elseif {$op eq "sub"} {
+                    set result [expr {$x - $y}]
+                } else {
+                    set result 0
+                }
+                return $result
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (if) + 1 (elseif) = 3
+        self.assertEqual(3, result[0].cyclomatic_complexity)
+
+    def test_proc_with_upvar(self):
+        """Test proc using upvar for variable reference."""
+        result = get_tcl_function_list('''
+            proc increment_var {varname} {
+                upvar $varname var
+                if {[info exists var]} {
+                    incr var
+                    return 1
+                }
+                return 0
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_array_operations(self):
+        """Test array operations with conditionals."""
+        result = get_tcl_function_list('''
+            proc array_check {arr_name key} {
+                upvar $arr_name arr
+                if {[info exists arr($key)]} {
+                    if {$arr($key) > 0} {
+                        return $arr($key)
+                    }
+                }
+                return -1
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 2 (two if statements) = 3
+        self.assertEqual(3, result[0].cyclomatic_complexity)
+
+    def test_comments_with_special_chars(self):
+        """Test that comments with special characters don't break parsing."""
+        result = get_tcl_function_list('''
+            proc test_comments {x} {
+                # This comment has {braces} and "quotes"
+                if {$x > 0} {
+                    # Another comment with \\ backslashes
+                    return 1
+                }
+                # Comment with || and && operators
+                return 0
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_command_substitution_in_condition(self):
+        """Test command substitution within if condition."""
+        result = get_tcl_function_list('''
+            proc check_file {filename} {
+                if {[file exists $filename] && [file readable $filename]} {
+                    if {[file size $filename] > 0} {
+                        return 1
+                    }
+                }
+                return 0
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (if) + 1 (&&) + 1 (nested if) = 4
+        self.assertEqual(4, result[0].cyclomatic_complexity)
+
+    def test_variable_names_with_special_chars(self):
+        """Test variable names with underscores and numbers."""
+        result = get_tcl_function_list('''
+            proc process_data {input_data_1 output_var_2} {
+                set temp_123 $input_data_1
+                if {$temp_123 > 0} {
+                    set $output_var_2 $temp_123
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual(2, result[0].parameter_count)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+
 class TestTclFlatCodeAnalysis(unittest.TestCase):
     """Test TCL flat code (code outside procs) complexity tracking."""
 
