@@ -67,12 +67,14 @@ class TclStateMachine(CodeStateMachine):
         super(TclStateMachine, self).__init__(context)
         self.brace_count = 0
         self.proc_name = None
+        self.proc_name_parts = []  # For accumulating namespace-qualified names
         # Stack to track nested switches: each entry is (brace_level, pattern_count, return_state)
         self.switch_stack = []
 
     def _state_global(self, token):
         """Global state - looking for proc definitions and switch statements."""
         if token == 'proc':
+            self.proc_name_parts = []  # Reset for new proc
             self.next(self._proc_name)
         elif token == 'switch':
             # Track switch for complexity - will add 1 for switch itself
@@ -83,13 +85,37 @@ class TclStateMachine(CodeStateMachine):
             self.statemachine_return()
 
     def _proc_name(self, token):
-        """Capture the procedure name."""
-        if token not in ['{', ' ', '\n', '\t']:
-            # This is the proc name
-            self.proc_name = token
-            self.context.push_new_function(token)
-            self.next(self._proc_params_start)
+        """Capture the procedure name, including namespace qualifiers (::)."""
+        if token == '::':
+            # Namespace separator - add to name parts
+            self.proc_name_parts.append(token)
+        elif token not in ['{', ' ', '\n', '\t']:
+            # This is part of the proc name (namespace or actual name)
+            self.proc_name_parts.append(token)
+            # Check if next token might be :: or if we should expect parameters
+            self.next(self._proc_name_continue)
         # Skip whitespace
+
+    def _proc_name_continue(self, token):
+        """Check if proc name continues with namespace qualifier or is complete."""
+        if token == '::':
+            # More namespace qualifiers coming
+            self.proc_name_parts.append(token)
+            self.next(self._proc_name)
+        elif token == '{':
+            # Name is complete, starting parameters
+            self.proc_name = ''.join(self.proc_name_parts)
+            self.context.push_new_function(self.proc_name)
+            self.context.add_to_long_function_name("(")
+            self.next(self._proc_params)
+        elif token in [' ', '\n', '\t']:
+            # Whitespace before parameters - name is complete
+            self.proc_name = ''.join(self.proc_name_parts)
+            self.context.push_new_function(self.proc_name)
+            self.next(self._proc_params_start)
+        else:
+            # Error in syntax, return to global
+            self.next(self._state_global)
 
     def _proc_params_start(self, token):
         """Expecting opening brace for parameter list."""

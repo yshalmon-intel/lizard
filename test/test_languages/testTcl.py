@@ -404,6 +404,75 @@ class TestTclLanguageRecognition(unittest.TestCase):
         self.assertGreater(result.nloc, 0)
 
 
+class TestTclNamespace(unittest.TestCase):
+    """Test TCL namespace-qualified procedure names."""
+
+    def test_namespace_qualified_proc(self):
+        """Test procedure with namespace qualifier (::namespace::proc)."""
+        result = get_tcl_function_list('''
+            proc ::htree::create_routing_rules {args} {
+                set tmpfile "test.txt"
+                if {[file exists $tmpfile]} {
+                    set score 10
+                }
+                return $score
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("::htree::create_routing_rules", result[0].name)
+        self.assertEqual(1, result[0].parameter_count)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_multiple_namespace_levels(self):
+        """Test procedure with multiple namespace levels."""
+        result = get_tcl_function_list('''
+            proc ::company::product::module::function_name {x y} {
+                if {$x > 0} {
+                    return [expr {$x + $y}]
+                }
+                return 0
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("::company::product::module::function_name", result[0].name)
+        self.assertEqual(2, result[0].parameter_count)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_namespace_and_regular_procs_mixed(self):
+        """Test mix of namespace-qualified and regular procedures."""
+        result = get_tcl_function_list('''
+            proc ::ns::func1 {} {
+                puts "Namespaced"
+            }
+            
+            proc regular_func {} {
+                puts "Regular"
+            }
+            
+            proc ::other::func2 {x} {
+                if {$x > 0} {
+                    return 1
+                }
+            }
+        ''')
+        self.assertEqual(3, len(result))
+        self.assertEqual("::ns::func1", result[0].name)
+        self.assertEqual("regular_func", result[1].name)
+        self.assertEqual("::other::func2", result[2].name)
+        self.assertEqual(2, result[2].cyclomatic_complexity)
+
+    def test_namespace_with_default_params(self):
+        """Test namespace-qualified proc with default parameters."""
+        result = get_tcl_function_list('''
+            proc ::utils::greet {name {greeting "Hello"}} {
+                puts "$greeting, $name"
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("::utils::greet", result[0].name)
+        self.assertEqual(1, result[0].parameter_count)  # 'name' only, default value block is skipped
+
+
 class TestTclFlatCodeAnalysis(unittest.TestCase):
     """Test TCL flat code (code outside procs) complexity tracking."""
 
