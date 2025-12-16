@@ -205,7 +205,53 @@ class TestTclParser(unittest.TestCase):
             }
         ''')
         self.assertEqual(1, len(result))
-        # Note: switch handling may vary - will need adjustment
+        # CC = 1 (base) + 1 (switch) + 3 (patterns 2, 3, 4) = 5
+        self.assertEqual(5, result[0].cyclomatic_complexity)
+
+    def test_switch_simple_patterns(self):
+        """Test simple switch with 3 patterns."""
+        result = get_tcl_function_list('''
+            proc test_switch {x} {
+                switch $x {
+                    1 { puts "One" }
+                    2 { puts "Two" }
+                    3 { puts "Three" }
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (switch) + 2 (patterns 2 & 3) = 4
+        self.assertEqual(4, result[0].cyclomatic_complexity)
+
+    def test_switch_nested(self):
+        """Test nested switch statements."""
+        result = get_tcl_function_list('''
+            proc test_nested {status level} {
+                switch $status {
+                    "unknown" {
+                        set temp $level
+                    }
+                    "same" {
+                        switch $level {
+                            "unrelated" { set temp "a" }
+                            "gated" { set temp "b" }
+                            "ungated" { set temp "c" }
+                        }
+                    }
+                    "other" {
+                        switch $level {
+                            "test" { set temp "x" }
+                        }
+                    }
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        # CC = 1 (base) + 1 (outer switch) + 2 (3 outer patterns)
+        #      + 1 (inner switch 1) + 2 (3 inner patterns)
+        #      + 1 (inner switch 2) + 0 (1 inner pattern)
+        # = 1 + 1 + 2 + 1 + 2 + 1 + 0 = 8
+        self.assertEqual(8, result[0].cyclomatic_complexity)
 
     def test_nested_control_flow(self):
         """Test nested control structures."""

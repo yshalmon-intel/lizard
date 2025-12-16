@@ -21,9 +21,9 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
     language_names = ['tcl']
     
     # Separated condition categories for cyclomatic complexity
-    _control_flow_keywords = {'if', 'elseif', 'while', 'for', 'foreach', 'catch', 'switch'}
+    _control_flow_keywords = {'if', 'elseif', 'while', 'for', 'foreach'}
     _logical_operators = {'&&', '||', 'and', 'or'}
-    _case_keywords = set()  # TCL uses switch with pattern matching
+    _case_keywords = set()  # TCL switch patterns are tracked in state machine
     _ternary_operators = set()  # TCL uses if syntax, not ternary
 
     def __init__(self, context):
@@ -67,11 +67,17 @@ class TclStateMachine(CodeStateMachine):
         super(TclStateMachine, self).__init__(context)
         self.brace_count = 0
         self.proc_name = None
+        # Stack to track nested switches: each entry is (brace_level, pattern_count, return_state)
+        self.switch_stack = []
 
     def _state_global(self, token):
-        """Global state - looking for proc definitions."""
+        """Global state - looking for proc definitions and switch statements."""
         if token == 'proc':
             self.next(self._proc_name)
+        elif token == 'switch':
+            # Track switch for complexity - will add 1 for switch itself
+            self.context.add_condition()
+            self.next(self._switch_options)
         elif token == '}':
             # End of a block - might be end of function
             self.statemachine_return()
@@ -125,8 +131,12 @@ class TclStateMachine(CodeStateMachine):
             self.next(self._state_global)
 
     def _proc_body(self, token):
-        """Inside procedure body - track braces."""
-        if token == '{':
+        """Inside procedure body - track braces and switch statements."""
+        if token == 'switch':
+            # Track switch for complexity
+            self.context.add_condition()
+            self.next(self._switch_options)
+        elif token == '{':
             self.brace_count += 1
         elif token == '}':
             self.brace_count -= 1
@@ -134,3 +144,73 @@ class TclStateMachine(CodeStateMachine):
                 # End of proc body
                 self.context.end_of_function()
                 self.next(self._state_global)
+
+    def _switch_options(self, token):
+        """After 'switch' keyword - may have options like -exact, -glob, -regexp, or the value directly."""
+        if token in ['-exact', '-glob', '-regexp', '-nocase', '--']:
+            # Skip switch options
+            pass
+        elif token == '{':
+            # Start of switch body - push onto stack
+            return_state = self._proc_body if self.brace_count > 0 else self._state_global
+            self.switch_stack.append({'brace_level': 1, 'pattern_count': 0, 'return_state': return_state})
+            self.next(self._switch_body)
+        elif token not in [' ', '\n', '\t', '$']:
+            # If not an option or brace, this is the variable/value being switched on
+            # Next should be the opening brace of switch body
+            self.next(self._switch_value)
+
+    def _switch_value(self, token):
+        """After the switch variable - expecting opening brace for switch body."""
+        if token == '{':
+            # Start of switch body - push onto stack
+            return_state = self._proc_body if self.brace_count > 0 else self._state_global
+            self.switch_stack.append({'brace_level': 1, 'pattern_count': 0, 'return_state': return_state})
+            self.next(self._switch_body)
+        elif token not in [' ', '\n', '\t']:
+            # Error in syntax, return to previous state
+            if self.brace_count > 0:
+                self.next(self._proc_body)
+            else:
+                self.next(self._state_global)
+
+    def _switch_body(self, token):
+        """Inside switch body - count patterns (each pattern is a decision point)."""
+        if len(self.switch_stack) == 0:
+            # Error - no switch context, return to appropriate state
+            if self.brace_count > 0:
+                self.next(self._proc_body)
+            else:
+                self.next(self._state_global)
+            return
+        
+        current_switch = self.switch_stack[-1]
+        
+        if token == 'switch':
+            # Nested switch! Add complexity for this switch
+            self.context.add_condition()
+            self.next(self._switch_options)
+        elif token == '{':
+            current_switch['brace_level'] += 1
+        elif token == '}':
+            current_switch['brace_level'] -= 1
+            if current_switch['brace_level'] == 0:
+                # End of this switch body
+                pattern_count = current_switch['pattern_count']
+                return_state = current_switch['return_state']
+                self.switch_stack.pop()
+                
+                # Add complexity for patterns (subtract 1 because switch itself already counted)
+                if pattern_count > 0:
+                    self.context.add_condition(pattern_count - 1)
+                
+                # If we're still in a switch (nested case), stay in switch_body
+                if len(self.switch_stack) > 0:
+                    self.next(self._switch_body)
+                else:
+                    self.next(return_state)
+        elif current_switch['brace_level'] == 1 and token not in [' ', '\n', '\t', '#']:
+            # At level 1 (inside switch body but outside pattern bodies), 
+            # non-whitespace tokens are pattern names
+            if not token.startswith('#'):  # Ignore comments
+                current_switch['pattern_count'] += 1
