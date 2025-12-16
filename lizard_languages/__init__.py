@@ -27,6 +27,7 @@ from .perl import PerlReader
 from .st import StReader
 from .r import RReader
 from .plsql import PLSQLReader
+from .tcl import TclReader
 
 
 def languages():
@@ -58,6 +59,7 @@ def languages():
         StReader,
         RReader,
         PLSQLReader,
+        TclReader,
     ]
 
 

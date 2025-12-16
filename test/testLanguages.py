@@ -1,6 +1,6 @@
 import unittest
 from lizard_languages import get_reader_for, CLikeReader, JavaReader, ObjCReader, JavaScriptReader, ScalaReader,\
-    GDScriptReader, SolidityReader, ErlangReader, StReader
+    GDScriptReader, SolidityReader, ErlangReader, StReader, TclReader
 from lizard_languages.zig import ZigReader
 
 
@@ -43,3 +43,7 @@ class TestLanguageChooser(unittest.TestCase):
 
     def test_st(self):
         self.assertEqual(StReader, get_reader_for("a.st"))
+
+    def test_tcl(self):
+        self.assertEqual(TclReader, get_reader_for("a.tcl"))
+
