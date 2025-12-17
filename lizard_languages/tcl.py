@@ -100,10 +100,57 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
                 return content
             return token
         
-        # Mask all braced content
-        masked_source, replacements = mask_braces(source_code)
+        def mask_quoted_strings(text):
+            """Mask quoted strings that may contain nested brackets with quotes."""
+            masked = text
+            replacements = {}
+            counter = 0
+            i = 0
+            
+            while i < len(masked):
+                if masked[i] == '"':
+                    # Start of quoted string - find matching close quote
+                    # Must handle nested brackets with their own quotes
+                    j = i + 1
+                    bracket_depth = 0
+                    
+                    while j < len(masked):
+                        if masked[j] == '\\' and j + 1 < len(masked):
+                            # Skip escaped character
+                            j += 2
+                            continue
+                        elif masked[j] == '[':
+                            bracket_depth += 1
+                        elif masked[j] == ']':
+                            bracket_depth -= 1
+                        elif masked[j] == '"' and bracket_depth == 0:
+                            # Found closing quote (not inside brackets)
+                            break
+                        j += 1
+                    
+                    if j < len(masked) and masked[j] == '"':
+                        # Found complete quoted string
+                        content = masked[i:j+1]  # Include quotes
+                        placeholder = f'__TCL_STRING_{counter}__'
+                        replacements[placeholder] = content
+                        masked = masked[:i] + placeholder + masked[j+1:]
+                        counter += 1
+                        i += len(placeholder)
+                        continue
+                i += 1
+            
+            return masked, replacements
         
-        # Tokenize the masked source (no braces to confuse quoted string patterns)
+        # First mask all braced content (to protect quotes inside braces)
+        masked_source, brace_replacements = mask_braces(source_code)
+        
+        # Then mask quoted strings (now protected from brace content)
+        masked_source, string_replacements = mask_quoted_strings(masked_source)
+        
+        # Combine replacements
+        replacements = {**brace_replacements, **string_replacements}
+        
+        # Tokenize the masked source (no braces or complex strings to confuse patterns)
         base_tokens = ScriptLanguageMixIn.generate_common_tokens(
             masked_source,
             # Match command substitution
@@ -113,17 +160,15 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
             addition,
             token_class)
         
-        # Unmask tokens and expand braced content
+        # Unmask tokens and expand braced content (but not strings)
         for token in base_tokens:
-            # First, restore any placeholders embedded in this token
-            restored_token = token
-            for placeholder, original in replacements.items():
-                if placeholder in restored_token:
-                    restored_token = restored_token.replace(placeholder, original)
-            
-            if token in replacements:
-                # This token IS a braced content placeholder - expand it
-                original = restored_token
+            # Check if this token is a string placeholder
+            if token in string_replacements:
+                # String placeholder - just yield the restored string as-is
+                yield string_replacements[token]
+            elif token in brace_replacements:
+                # Brace placeholder - expand it
+                original = brace_replacements[token]
                 
                 # Yield opening brace
                 yield '{'
@@ -139,7 +184,11 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
                 # Yield closing brace
                 yield '}'
             else:
-                # Regular token, just yield it (with placeholders restored)
+                # Regular token - restore any embedded placeholders and yield
+                restored_token = token
+                for placeholder, original in {**string_replacements, **brace_replacements}.items():
+                    if placeholder in restored_token:
+                        restored_token = restored_token.replace(placeholder, original)
                 yield restored_token
 
 
