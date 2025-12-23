@@ -51,6 +51,22 @@ class TestTclTokenizer(unittest.TestCase):
         """Test variable substitution $var."""
         self.check_tokens(['puts', ' ', '$x'], 'puts $x')
 
+    def test_escaped_braces_in_comment(self):
+        """Test that escaped braces in comments don't break parsing."""
+        # This was causing issues - escaped braces were being treated as structural braces
+        self.check_tokens(['# puts $fp "if \\(\\$derived\\_upf\\) \\{"', '\n'], 
+                         '# puts $fp "if \\(\\$derived\\_upf\\) \\{"\n')
+
+    def test_escaped_braces_in_string(self):
+        """Test escaped braces in quoted strings."""
+        self.check_tokens(['puts', ' ', '"test \\{ and \\}"'], 'puts "test \\{ and \\}"')
+
+    def test_escaped_braces_in_code(self):
+        """Test escaped braces in regular code."""
+        tokens = list(TclReader.generate_tokens('set x \\{value\\}'))
+        # Escaped braces should be treated as regular characters, not structural braces
+        self.assertIn('\\{value\\}', ''.join(tokens))
+
 
 class TestTclParser(unittest.TestCase):
     """Test TCL parsing and complexity calculation."""
@@ -831,6 +847,51 @@ class TestTclCornerCases(unittest.TestCase):
         self.assertEqual(1, len(result))
         # CC = 1 (base) + 2 (two if statements) = 3
         self.assertEqual(3, result[0].cyclomatic_complexity)
+
+    def test_escaped_braces_in_proc(self):
+        """Test proc with escaped braces in comments and strings."""
+        result = get_tcl_function_list('''
+            proc write_tcl_code {fp upf} {
+                # This comment has escaped braces: \{ and \}
+                # puts $fp "if \(\$derived\_upf\) \{"
+                if {$upf == 1} {
+                    puts $fp "test \\{ value \\}"
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("write_tcl_code", result[0].name)
+        self.assertEqual(2, result[0].parameter_count)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_escaped_braces_comprehensive(self):
+        """Test comprehensive handling of escaped braces (\\{ and \\}).
+        
+        This test covers the issue where escaped braces in comments or strings
+        were being treated as structural braces, breaking the parser.
+        
+        Examples:
+        - \\{ is an escaped opening brace (literal character, not structural)
+        - \\\\{ is an escaped backslash followed by a real structural brace
+        """
+        result = get_tcl_function_list('''
+            proc write_upf_code {fp derived_upf} {
+                # Real-world comment that caused the original issue:
+                # puts $fp "if \(\$derived\_upf\) \{"
+                # The \\{ in the comment should NOT be treated as a structural brace
+                
+                if {$derived_upf} {
+                    # Another comment with escaped braces: \\{ and \\}
+                    puts $fp "test \\{ value \\}"
+                    return 1
+                }
+                return 0
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("write_upf_code", result[0].name)
+        self.assertEqual(2, result[0].parameter_count)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
 
     def test_comments_with_special_chars(self):
         """Test that comments with special characters don't break parsing."""

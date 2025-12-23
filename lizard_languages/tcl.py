@@ -52,25 +52,43 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
         # before standard tokenization, then restore after
         
         def mask_braces(text):
-            """Recursively mask braced content with placeholders."""
+            """Recursively mask braced content with placeholders.
+            
+            Note: Escaped braces (\{ and \}) are NOT structural braces and should be ignored.
+            However, if the backslash itself is escaped (\\{), then the brace IS structural.
+            """
             masked = text
             replacements = {}
             counter = 0
+            
+            def is_escaped(text, pos):
+                """Check if character at pos is escaped by counting preceding backslashes."""
+                if pos == 0:
+                    return False
+                # Count consecutive backslashes before this position
+                backslash_count = 0
+                check_pos = pos - 1
+                while check_pos >= 0 and text[check_pos] == '\\':
+                    backslash_count += 1
+                    check_pos -= 1
+                # Odd number of backslashes means the character is escaped
+                return backslash_count % 2 == 1
             
             # Keep processing until no more braced content found
             while True:
                 found = False
                 i = 0
                 while i < len(masked):
-                    if masked[i] == '{':
-                        # Found opening brace - find matching close
+                    if masked[i] == '{' and not is_escaped(masked, i):
+                        # Found unescaped opening brace - find matching close
                         depth = 1
                         j = i + 1
                         while j < len(masked) and depth > 0:
-                            if masked[j] == '{':
-                                depth += 1
-                            elif masked[j] == '}':
-                                depth -= 1
+                            if not is_escaped(masked, j):
+                                if masked[j] == '{':
+                                    depth += 1
+                                elif masked[j] == '}':
+                                    depth -= 1
                             j += 1
                         
                         if depth == 0:
