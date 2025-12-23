@@ -51,6 +51,23 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
         # Strategy: Recursively find and mask ALL braced content (handling nesting)
         # before standard tokenization, then restore after
         
+        def is_escaped(text, pos):
+            """Check if character at pos is escaped by counting preceding backslashes.
+            
+            Used by both mask_braces() and mask_quoted_strings() to detect escaped
+            special characters that should not be treated as structural delimiters.
+            """
+            if pos == 0:
+                return False
+            # Count consecutive backslashes before this position
+            backslash_count = 0
+            check_pos = pos - 1
+            while check_pos >= 0 and text[check_pos] == '\\':
+                backslash_count += 1
+                check_pos -= 1
+            # Odd number of backslashes means the character is escaped
+            return backslash_count % 2 == 1
+        
         def mask_braces(text):
             """Recursively mask braced content with placeholders.
             
@@ -60,19 +77,6 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
             masked = text
             replacements = {}
             counter = 0
-            
-            def is_escaped(text, pos):
-                """Check if character at pos is escaped by counting preceding backslashes."""
-                if pos == 0:
-                    return False
-                # Count consecutive backslashes before this position
-                backslash_count = 0
-                check_pos = pos - 1
-                while check_pos >= 0 and text[check_pos] == '\\':
-                    backslash_count += 1
-                    check_pos -= 1
-                # Odd number of backslashes means the character is escaped
-                return backslash_count % 2 == 1
             
             # Keep processing until no more braced content found
             while True:
@@ -119,15 +123,19 @@ class TclReader(CodeReader, ScriptLanguageMixIn):
             return token
         
         def mask_quoted_strings(text):
-            """Mask quoted strings that may contain nested brackets with quotes."""
+            """Mask quoted strings that may contain nested brackets with quotes.
+            
+            Note: Escaped quotes (\") are NOT string delimiters and should be ignored.
+            Uses the same is_escaped() logic as mask_braces().
+            """
             masked = text
             replacements = {}
             counter = 0
             i = 0
             
             while i < len(masked):
-                if masked[i] == '"':
-                    # Start of quoted string - find matching close quote
+                if masked[i] == '"' and not is_escaped(masked, i):
+                    # Start of unescaped quoted string - find matching close quote
                     # Must handle nested brackets with their own quotes
                     j = i + 1
                     bracket_depth = 0

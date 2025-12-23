@@ -67,6 +67,23 @@ class TestTclTokenizer(unittest.TestCase):
         # Escaped braces should be treated as regular characters, not structural braces
         self.assertIn('\\{value\\}', ''.join(tokens))
 
+    def test_escaped_quotes_not_string_delimiters(self):
+        """Test that escaped quotes (\\") are not treated as string delimiters."""
+        # Before the fix, \\" would start a string match, causing incorrect tokenization
+        tokens = list(TclReader.generate_tokens('set x \\"test "real"'))
+        # The string "real" should be tokenized as a single quoted string
+        self.assertIn('"real"', tokens)
+        # The escaped quote should NOT consume following content
+        self.assertIn('test', tokens)
+    
+    def test_escaped_quotes_in_string(self):
+        """Test escaped quotes inside a real string."""
+        tokens = list(TclReader.generate_tokens('puts "say \\"hello\\""'))
+        # Should have one string token containing the escaped quotes
+        string_tokens = [t for t in tokens if t.startswith('"')]
+        self.assertEqual(1, len(string_tokens))
+        self.assertIn('\\"', string_tokens[0])
+
 
 class TestTclParser(unittest.TestCase):
     """Test TCL parsing and complexity calculation."""
@@ -891,6 +908,43 @@ class TestTclCornerCases(unittest.TestCase):
         self.assertEqual(1, len(result))
         self.assertEqual("write_upf_code", result[0].name)
         self.assertEqual(2, result[0].parameter_count)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_escaped_quotes_in_proc(self):
+        """Test proc with escaped quotes that should not be treated as strings.
+        
+        This tests the fix for the bug where \\" was treated as a string delimiter,
+        similar to the \\{ brace bug.
+        """
+        result = get_tcl_function_list('''
+            proc format_output {text} {
+                # Set a variable with escaped quotes (not a string)
+                set prefix \\"Result: 
+                # Now use a real string
+                puts "$prefix $text"
+                if {$text ne ""} {
+                    return 1
+                }
+                return 0
+            }
+        ''')
+        self.assertEqual(1, len(result))
+        self.assertEqual("format_output", result[0].name)
+        self.assertEqual(1, result[0].parameter_count)
+        self.assertEqual(2, result[0].cyclomatic_complexity)
+
+    def test_mixed_escaped_and_real_quotes(self):
+        """Test code with both escaped quotes and real quoted strings."""
+        result = get_tcl_function_list('''
+            proc test_quotes {val} {
+                set x \\"not a string\\"
+                set y "this is a real string"
+                if {$val} {
+                    puts $y
+                }
+            }
+        ''')
+        self.assertEqual(1, len(result))
         self.assertEqual(2, result[0].cyclomatic_complexity)
 
     def test_comments_with_special_chars(self):
